@@ -22,7 +22,7 @@ Migrating flags is the job where an agent gets things quietly wrong. LaunchDarkl
 | 4. Parity | `parity.py` | the LaunchDarkly or Unleash SDK against the Flagsmith SDK on `flagsmith environment document`, all offline |
 | 5. Cutover | `cutover.py` | a worklist of the exact lines to change, then `--check` (no old reads left) and the PR body |
 
-The agent's instructions are in [skills/liftover/SKILL.md](skills/liftover/SKILL.md), about 1.9k tokens, and it passes the Agent Skills validator (`agentskills validate`). Every script prints one line per flag, so the agent reads lines, not JSON.
+The agent's instructions are in [skills/liftover/SKILL.md](skills/liftover/SKILL.md), about 1.2k tokens (4.9 KB, down from 7.7 KB), and it passes the Agent Skills validator (`agentskills validate`). Every script prints one line per flag, so the agent reads lines, not JSON.
 
 ## Install
 
