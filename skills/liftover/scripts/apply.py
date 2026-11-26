@@ -225,7 +225,7 @@ def rollback(execute):
     if execute:
         for _, args in steps:
             fs(*args, check=False)  # a feature delete may already have removed its segments
-        APPLIED.rename(APPLIED.with_suffix(".rolled-back.json"))
+        APPLIED.replace(APPLIED.with_suffix(".rolled-back.json"))
         print(f"rolled back {len(steps)} steps")
     else:
         print("dry run: add --execute to roll back")
