@@ -31,6 +31,8 @@ Read-only against the source. Unleash needs `UNLEASH_URL` (ending `/api`) and `U
 needs one SDK data file per environment, fetched with that environment's server-side SDK key:
 `curl -sH "Authorization: $LD_SDK_KEY" https://sdk.launchdarkly.com/sdk/latest-all > ld-prod.json`.
 
+Run the scripts with the Python that has the SDK packages (call its `python` by full path; putting it on PATH is not always enough).
+An environment-variable flag shows `-` when no `--env-files` file sets it: that means off, the plan will say so.
 Show the user the table. Settle every row with a `review` note before moving on:
 - **read in code but missing from the source system**: the code always gets the default today. Usually leave it out
   of the migration and tell the user.

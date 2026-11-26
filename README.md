@@ -61,7 +61,7 @@ The full table is in [references/mapping.md](skills/liftover/references/mapping.
 - **Parity, checked by LaunchDarkly's own SDK:** 14/14 pass, including the ordered `pricing_tier` for every user. See [examples/launchdarkly-parity.md](examples/launchdarkly-parity.md).
 
 **Both demos:**
-- **Token use:** with the skill, the agent reads about 15k characters (SKILL.md plus every script's output), roughly 3.8k tokens. The raw data it would otherwise read is about 42.5k characters, roughly 10.6k tokens: the Unleash API JSON, the code, both Flagsmith environment documents, and the plan and parity data. That is an estimate of input only, not an A/B run of two agents. The gap grows with the flag count because the skill prints one line per flag.
+- **Token use (measured):** a fresh agent given only the skill and the Unleash shop finished all five steps in **86,990 tokens**, 11 tool calls, 3 minutes 4 seconds (Claude Sonnet 5.5 subagent, 2026-11-26; the count is the harness's total for that agent). Result: 10 flags migrated, 1 retired, 1 skipped, parity 20/20, cutover committed. Earlier estimate of the skill's input alone: about 3.8k tokens against 10.6k for the raw data.
 
 ## Run the demo
 
