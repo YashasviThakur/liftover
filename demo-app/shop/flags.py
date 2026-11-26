@@ -6,9 +6,9 @@ from UnleashClient import UnleashClient
 unleash = UnleashClient(
     url=os.environ.get("UNLEASH_URL", "http://localhost:4242/api"),
     app_name="demo-shop",
-    environment=os.environ.get("APP_ENV", "production"),
-    custom_headers={"Authorization": os.environ.get("UNLEASH_CLIENT_TOKEN", "")},
+    api_key=os.environ.get("UNLEASH_CLIENT_TOKEN", ""),  # the token picks the environment
 )
+unleash.initialize_client()
 
 
 def context(user) -> dict:

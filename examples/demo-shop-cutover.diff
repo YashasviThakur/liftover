@@ -1,0 +1,125 @@
+diff --git a/.env.production b/.env.production
+index 5225d32..5775a81 100644
+--- a/.env.production
++++ b/.env.production
+@@ -1,4 +1,2 @@
+ APP_ENV=production
+-FEATURE_DARK_MODE=true
+-FEATURE_NEW_ONBOARDING=0
+-UPLOAD_LIMIT_MB=50
++# Flags now live in Flagsmith. FLAGSMITH_ENVIRONMENT_KEY (server-side key) comes from the deploy secrets.
+diff --git a/shop/checkout.py b/shop/checkout.py
+index de24ead..559f8e3 100644
+--- a/shop/checkout.py
++++ b/shop/checkout.py
+@@ -1,15 +1,14 @@
+-from .flags import context, unleash
++from .flags import flags_for
+ 
+ 
+ def checkout_page(user) -> dict:
+-    ctx = context(user)
++    flags = flags_for(user)
+     page = {"flow": "classic", "button": "Buy now"}
+-    if unleash.is_enabled("new_checkout", ctx):
++    if flags.is_feature_enabled("new_checkout"):
+         page["flow"] = "one_page"
+-    variant = unleash.get_variant("checkout_button", ctx)
+-    if variant["enabled"]:
++    if flags.is_feature_enabled("checkout_button"):
+         page["button"] = {"buy_now": "Buy now", "get_it_today": "Get it today",
+-                          "add_to_bag": "Add to bag"}[variant["payload"]["value"]]
+-    if unleash.is_enabled("age_gate", ctx):
++                          "add_to_bag": "Add to bag"}[flags.get_feature_value("checkout_button")]
++    if flags.is_feature_enabled("age_gate"):
+         page["age_check"] = True
+     return page
+diff --git a/shop/dashboard.py b/shop/dashboard.py
+index 1d9d9b8..f5d3177 100644
+--- a/shop/dashboard.py
++++ b/shop/dashboard.py
+@@ -1,22 +1,17 @@
+-import os
+-
+-from .flags import context, unleash
+-
+-# Homegrown flags from environment variables, set per deploy.
+-DARK_MODE = os.environ.get("FEATURE_DARK_MODE", "false") == "true"
+-NEW_ONBOARDING = os.getenv("FEATURE_NEW_ONBOARDING") == "1"
+-UPLOAD_LIMIT_MB = int(os.environ.get("UPLOAD_LIMIT_MB", "25"))
++from .flags import flags_for
+ 
+ 
+ def dashboard(user) -> dict:
+-    ctx = context(user)
+-    view = {"theme": "dark" if DARK_MODE else "light", "upload_limit_mb": UPLOAD_LIMIT_MB}
+-    if unleash.is_enabled("beta_dashboard", ctx):
++    flags = flags_for(user)
++    limit = flags.get_feature_value("upload_limit_mb")
++    view = {"theme": "dark" if flags.is_feature_enabled("dark_mode") else "light",
++            "upload_limit_mb": int(limit) if limit is not None else 25}
++    if flags.is_feature_enabled("beta_dashboard"):
+         view["layout"] = "beta"
+-    if unleash.is_enabled("pro_reports", ctx):
++    if flags.is_feature_enabled("pro_reports"):
+         view["reports"] = "pro"
+-    if unleash.is_enabled("recommendations_v2", ctx):
++    if flags.is_feature_enabled("recommendations_v2"):  # not in Flagsmith yet: off, as it was in Unleash
+         view["recommendations"] = "v2"
+-    if NEW_ONBOARDING and user.get("is_new"):
++    if flags.is_feature_enabled("new_onboarding") and user.get("is_new"):
+         view["onboarding"] = "guided"
+     return view
+diff --git a/shop/flags.py b/shop/flags.py
+index d2a0c4a..e1e7f6d 100644
+--- a/shop/flags.py
++++ b/shop/flags.py
+@@ -1,16 +1,20 @@
+-"""The shop's flag client: Unleash today. Liftover moves this to Flagsmith."""
++"""The shop's flag client: Flagsmith (migrated from Unleash and env vars by Liftover)."""
+ import os
+ 
+-from UnleashClient import UnleashClient
++from flagsmith import Flagsmith
++from flagsmith.models import DefaultFlag
+ 
+-unleash = UnleashClient(
+-    url=os.environ.get("UNLEASH_URL", "http://localhost:4242/api"),
+-    app_name="demo-shop",
+-    api_key=os.environ.get("UNLEASH_CLIENT_TOKEN", ""),  # the token picks the environment
++flagsmith = Flagsmith(
++    environment_key=os.environ.get("FLAGSMITH_ENVIRONMENT_KEY", ""),  # the key picks the environment
++    api_url=os.environ.get("FLAGSMITH_API_URL", "https://edge.api.flagsmith.com/api/v1/"),
++    # Unleash answered "off" for unknown flags; keep that (also covers Flagsmith being unreachable).
++    default_flag_handler=lambda name: DefaultFlag(enabled=False, value=None),
+ )
+-unleash.initialize_client()
+ 
+ 
+-def context(user) -> dict:
+-    return {"userId": user["id"], "properties": {
+-        "plan": user.get("plan", "free"), "country": user.get("country", ""), "age": str(user.get("age", 0))}}
++def flags_for(user=None):
++    """Same attributes the Unleash context had, as Flagsmith traits."""
++    if user is None:
++        return flagsmith.get_environment_flags()
++    return flagsmith.get_identity_flags(user["id"], traits={
++        "plan": user.get("plan", "free"), "country": user.get("country", ""), "age": int(user.get("age", 0))})
+diff --git a/shop/site.py b/shop/site.py
+index 86f1c34..ecc96e0 100644
+--- a/shop/site.py
++++ b/shop/site.py
+@@ -1,9 +1,10 @@
+-from .flags import unleash
++from .flags import flags_for
+ 
+ 
+ def banner() -> str | None:
+-    if unleash.is_enabled("maintenance_mode"):
++    flags = flags_for()
++    if flags.is_feature_enabled("maintenance_mode"):
+         return "We're doing some maintenance. Back soon."
+-    if unleash.is_enabled("holiday_banner"):
++    if flags.is_feature_enabled("holiday_banner"):
+         return "Holiday sale: 20% off everything."
+     return None
