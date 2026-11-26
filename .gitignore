@@ -1,0 +1,6 @@
+.env
+*.env
+.liftover/
+__pycache__/
+node_modules/
+.venv/
