@@ -27,6 +27,7 @@ from cli import fs
 from plan import env_var_enabled
 
 STATE = Path(".liftover")
+SOURCE_NAME = {"unleash": "Unleash", "launchdarkly": "LaunchDarkly", "env": "env var"}
 
 
 def sample_users(flags, n, seed):
@@ -35,7 +36,10 @@ def sample_users(flags, n, seed):
     values, numeric, ids = {}, set(), set()
     for f in flags.values():
         for e in f["environments"].values():
-            for r in e.get("rules", []):
+            ld = e.get("ld") or {}
+            for t in ld.get("targets", []):
+                ids.update(t["values"])
+            for r in e.get("rules", []) + ld.get("rules", []):
                 for c in r["conditions"]:
                     if c["attr"] == "userId":
                         ids.update(c["values"])
@@ -76,6 +80,24 @@ def unleash_client(env, tmp):
                          multiple_instance_mode=InstanceAllowType.SILENTLY_ALLOW)
 
 
+class LaunchDarkly:
+    """LaunchDarkly's own SDK on the same SDK data file the inventory read, offline."""
+
+    def __init__(self, path):
+        import ldclient
+        from ldclient.config import Config
+        from ldclient.integrations import Files
+        self._ctx = ldclient.Context
+        self.client = ldclient.LDClient(Config("offline-parity", send_events=False,
+                                               update_processor_class=Files.new_data_source(paths=[path])))
+
+    def variation(self, key, uid, traits):
+        b = self._ctx.builder(uid)
+        for k, v in traits.items():
+            b.set(k, v)
+        return self.client.variation(key, b.build(), None)
+
+
 def flagsmith_client(project, env, tmp):
     from flagsmith import Flagsmith
     from flagsmith.offline_handlers import LocalFileHandler
@@ -90,6 +112,11 @@ def source_value(f, env, client, uid, traits):
         e = f["environments"].get(env)
         raw = e["value"] if e else None
         return (raw is not None, raw) if f["kind"] == "value" else (env_var_enabled(f, raw), None)
+    if f["source"] == "launchdarkly":
+        v = client[f["key"]].variation(f["key"], uid, traits) if f["key"] in client else None
+        if f["kind"] == "boolean":
+            return bool(v), None
+        return v is not None, None if v is None else str(v)
     ctx = {"userId": uid, "properties": {k: str(v) for k, v in traits.items()}}
     on = client.is_enabled(f["key"], ctx)
     if f["kind"] != "multivariate":
@@ -100,6 +127,9 @@ def source_value(f, env, client, uid, traits):
 
 def hashed(f, env):
     e = f["environments"].get(env) or {}
+    ld = e.get("ld")
+    if ld:
+        return e["enabled"] and any(x["rollout"] for x in ld["rules"] + [ld["fallthrough"]])
     return any(r["rollout_percent"] < 100 or r.get("variants") for r in e.get("rules", []))
 
 
@@ -120,17 +150,23 @@ def main():
     for src_env, fs_env in plan["env_map"].items():
         needs_unleash = any(flags[k]["source"] == "unleash" for k in features)
         un = unleash_client(src_env, tmp) if needs_unleash else None
+        ld_files = {flags[k]["environments"][src_env]["ld_file"] for k in features
+                    if flags[k]["source"] == "launchdarkly" and src_env in flags[k]["environments"]}
+        lds = {path: LaunchDarkly(path) for path in ld_files}
+        ld = {k: lds[flags[k]["environments"][src_env]["ld_file"]] for k in features
+              if flags[k]["source"] == "launchdarkly" and src_env in flags[k]["environments"]}
         fl = flagsmith_client(a.project, fs_env, tmp)
         rows = {k: [] for k in features}
         for uid, traits in users:
             got = fl.get_identity_flags(uid, traits)
             for k in features:
-                src = source_value(flags[k], src_env, un, uid, traits)
+                src = source_value(flags[k], src_env, ld if flags[k]["source"] == "launchdarkly" else un, uid, traits)
                 on = got.is_feature_enabled(k)
                 val = got.get_feature_value(k)
-                if features[k]["type"] == "MULTIVARIATE":
+                kind = features[k].get("kind")
+                if kind == "multivariate":
                     dst = (on, val if on else None)
-                elif flags[k]["source"] == "env" and flags[k]["kind"] == "value":
+                elif kind == "value":
                     dst = (on, None if val is None else str(val))
                 else:
                     dst = (on, None)
@@ -139,8 +175,11 @@ def main():
             differ = [(u, t, s, d) for u, t, s, d in r if s != d]
             res = {"flag": k, "env": fs_env, "users": len(r), "differ": len(differ)}
             if hashed(flags[k], src_env):
+                # Targeted ids are sampled many times with different traits; for shares count each identity once.
+                once = list({row[0]: row for row in reversed(r)}.values())
                 label = lambda x: x[1] if x[1] is not None else ("on" if x[0] else "off")
-                share = lambda side: {label(x): round(100 * c / len(r), 1) for x, c in Counter(row[side] for row in r).items()}
+                share = lambda side: {label(x): round(100 * c / len(once), 1)
+                                      for x, c in Counter(row[side] for row in once).items()}
                 s, d = share(2), share(3)
                 gap = max(abs(s.get(x, 0) - d.get(x, 0)) for x in set(s) | set(d))
                 res.update(kind="statistical", source_share=s, flagsmith_share=d, gap_pp=round(gap, 1),
@@ -160,7 +199,8 @@ def main():
         else:
             on = lambda share: ", ".join(f"{k} {v:g}%" for k, v in sorted(share.items()))
             line = (f"{'within' if r['ok'] else '**outside**'} {a.tolerance:g} pts (gap {r['gap_pp']:g}); "
-                    f"Unleash {on(r['source_share'])} / Flagsmith {on(r['flagsmith_share'])}; "
+                    f"{SOURCE_NAME.get(flags[r['flag']]['source'], 'before')} {on(r['source_share'])} / "
+                    f"Flagsmith {on(r['flagsmith_share'])}; "
                     f"{r['differ']} users switch")
         md.append(f"| {r['flag']} | {r['env']} | {r['kind']} | {line} |")
         print(f"{'PASS' if r['ok'] else 'FAIL'} {r['flag']} {r['env']} {r['kind']}: {line.replace('**', '')}")

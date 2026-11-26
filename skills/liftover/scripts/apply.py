@@ -69,6 +69,19 @@ class Ctx:
     def flag(self, feature, env):
         return fs("flag", "get", feature, "-p", self.pid, env_key=self.envs[env]["api_key"], check=False)
 
+    def overrides(self, feature, env):
+        """{segment name: (priority, enabled, value)}; the CLI only reports how many overrides there are."""
+        q = f"environment={self.envs[env]['id']}&feature={self.features[feature]['id']}"
+        segs = {s["id"]: s for s in fs("api", f"api/v1/features/feature-segments/?{q}")["results"]}
+        out = {}
+        for st in fs("api", f"api/v1/features/featurestates/?{q}")["results"]:
+            fsg = segs.get(st.get("feature_segment"))
+            if fsg:
+                v = st["feature_state_value"] or {}
+                val = next((v[k] for k in ("string_value", "integer_value", "boolean_value") if v.get(k) is not None), None)
+                out[fsg["segment_name"]] = (fsg["priority"], st["enabled"], None if val is None else str(val))
+        return out
+
 
 def build_actions(plan, ctx, production):
     """-> list of (env or None, is_production, description, run)."""
@@ -169,15 +182,19 @@ def build_actions(plan, ctx, production):
                         args += ["--weight", ",".join(f"{ids[k]}={v:g}" for k, v in c[1].items())]
                 fs("flag", "update", name, "-p", ctx.pid, *args, "--yes", env_key=ctx.envs[env]["api_key"])
             add(env, f"{name} in {env}: default " + ", ".join(desc), set_state)
-        ov = st.get("segment_override")
-        if ov:
-            have = cur and any(o.get("segment") in (ov["segment"], (ctx.segments.get(ov["segment"]) or {}).get("id"))
-                               and o.get("enabled") == ov["enabled"] for o in cur.get("segment_overrides_list") or [])
-            if not have and not (cur and cur.get("segment_overrides")):
+        have = ctx.overrides(name, env) if name in ctx.features and env in ctx.envs else {}
+        for ov in st.get("segment_overrides", []):
+            want = (ov["priority"], ov["enabled"], None if ov["value"] is None else str(ov["value"]))
+            if have.get(ov["segment"]) != want:
                 def set_override(name=name, env=env, ov=ov):
-                    fs("flag", "update", name, "-p", ctx.pid, "--segment", ov["segment"],
-                       "--enable" if ov["enabled"] else "--disable", "--yes", env_key=ctx.envs[env]["api_key"])
-                add(env, f"{name} in {env}: on for segment {ov['segment']}", set_override)
+                    args = ["--enable" if ov["enabled"] else "--disable", "--priority", ov["priority"]]
+                    if ov["value"] is not None:
+                        args += ["--value", ov["value"], "--type", "string"]
+                    fs("flag", "update", name, "-p", ctx.pid, "--segment", ov["segment"], *args, "--yes",
+                       env_key=ctx.envs[env]["api_key"])
+                served = ov["value"] if ov["value"] is not None else ("on" if ov["enabled"] else "off")
+                add(env, f"{name} in {env}: {served} for segment {ov['segment']} (priority {ov['priority']})",
+                    set_override)
     return acts
 
 

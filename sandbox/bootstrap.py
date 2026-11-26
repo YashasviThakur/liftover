@@ -59,20 +59,21 @@ def main() -> None:
     token = call("POST", "/auth/login/", {"email": env["FLAGSMITH_ADMIN_EMAIL"],
                                           "password": env["FLAGSMITH_ADMIN_PASSWORD"]})["key"]
 
-    orgs = call("GET", "/organisations/", token=token)["results"]
-    org = orgs[0] if orgs else call("POST", "/organisations/", {"name": "Liftover Sandbox"}, token=token)
-    env["FLAGSMITH_ORG_ID"] = str(org["id"])
-
-    if KEY_VAR not in env:
-        created = call("POST", f"/organisations/{org['id']}/master-api-keys/",
-                       {"name": "liftover-sandbox", "is_admin": True}, token=token)
-        env[KEY_VAR] = created["key"]
-    save_env(env)
-
-    # Prove the key works without printing it.
-    orgs_via_key = call("GET", "/organisations/", key=env[KEY_VAR])["results"]
-    print(f"ok: organisation {org['name']!r} (id {org['id']}), admin API key works "
-          f"({len(orgs_via_key)} org visible). Wrote {ENV_FILE.name}.")
+    # A free organisation holds one project, so each demo (Unleash, LaunchDarkly) gets its own organisation.
+    # Created with the login token: creating one with an API key fails in 2.295.2 (500, HistoricalSubscription).
+    for name, org_var, key_var in (("Liftover Sandbox", "FLAGSMITH_ORG_ID", KEY_VAR),
+                                   ("Liftover LD Sandbox", "FLAGSMITH_LD_ORG_ID", "FLAGSMITH_LD_API_KEY")):
+        orgs = {o["name"]: o for o in call("GET", "/organisations/", token=token)["results"]}
+        org = orgs.get(name) or call("POST", "/organisations/", {"name": name}, token=token)
+        env[org_var] = str(org["id"])
+        if key_var not in env:
+            env[key_var] = call("POST", f"/organisations/{org['id']}/master-api-keys/",
+                                {"name": "liftover-sandbox", "is_admin": True}, token=token)["key"]
+        save_env(env)
+        # Prove the key works without printing it.
+        visible = [o["id"] for o in call("GET", "/organisations/", key=env[key_var])["results"]]
+        print(f"ok: organisation {name!r} (id {org['id']}), admin API key works: {org['id'] in visible}")
+    print(f"wrote {ENV_FILE.name}")
 
 
 if __name__ == "__main__":

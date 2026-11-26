@@ -1,6 +1,11 @@
 ---
 name: liftover
-description: Move a codebase's feature flags to Flagsmith from Unleash or homegrown environment-variable flags, with the Flagsmith CLI. Takes stock of every flag in the source system and the code, rebuilds them in Flagsmith (dry run first, production only after the user approves the exact change list), proves sampled users get the same flags from both systems, then rewrites the flag reads and opens the PR. Use when asked to migrate, move or switch feature flags to Flagsmith.
+description: Move a codebase's feature flags to Flagsmith from LaunchDarkly, Unleash or homegrown environment-variable flags, with the Flagsmith CLI. Takes stock of every flag in the source system and the code, rebuilds them in Flagsmith (dry run first, production only after the user approves the exact change list), proves sampled users get the same flags from both systems with each system's own SDK, then rewrites the flag reads and opens the PR. Use when asked to migrate, move, import or switch feature flags to Flagsmith, or to leave LaunchDarkly or Unleash.
+license: MIT
+compatibility: Needs Python 3.10+, the Flagsmith CLI v2, git and gh; step 4 needs pip packages flagsmith plus UnleashClient or launchdarkly-server-sdk. Works with Flagsmith Cloud and self-hosted.
+metadata:
+  version: "1.1"
+  source-systems: "launchdarkly, unleash, env-vars"
 ---
 
 # Liftover: move feature flags to Flagsmith
@@ -11,20 +16,20 @@ without the user typing yes to the exact change list.
 
 Scripts live in `scripts/` next to this file. Run them from the root of the repo being migrated. They print one line
 per flag; read those lines, not the JSON, unless a line needs a closer look. All state goes in `.liftover/` there
-(add it to `.gitignore`).
+(add it to `.gitignore`). To explain how a rule was translated, read [references/mapping.md](references/mapping.md).
 
-Setup, once: Python 3.10+, the Flagsmith CLI v2 (`npm install -g @flagsmith/cli`), and for step 4
-`pip install flagsmith UnleashClient`. Flagsmith access comes from the environment: `FLAGSMITH_API_URL`, an admin
-API key (`FLAGSMITH_API_KEY`, or `FLAGSMITH_API_KEY_<host>_<port>` for self-hosted) and `FLAGSMITH_ORGANISATION`.
-Never print or commit keys.
+Flagsmith access comes from the environment: `FLAGSMITH_API_URL`, an admin API key (`FLAGSMITH_API_KEY`, or
+`FLAGSMITH_API_KEY_<host>_<port>` for self-hosted) and `FLAGSMITH_ORGANISATION`. Never print or commit keys.
 
 ## 1. Inventory
 
 ```
-python scripts/inventory.py --repo <repo> [--unleash] [--env-files .env.production,.env.staging]
+python scripts/inventory.py --repo <repo> [--unleash] [--launchdarkly production=ld-prod.json,...] [--env-files .env.production]
 ```
 
-Needs `UNLEASH_URL` (ending `/api`) and `UNLEASH_ADMIN_TOKEN` for `--unleash`. Read-only against the source.
+Read-only against the source. Unleash needs `UNLEASH_URL` (ending `/api`) and `UNLEASH_ADMIN_TOKEN`. LaunchDarkly
+needs one SDK data file per environment, fetched with that environment's server-side SDK key:
+`curl -sH "Authorization: $LD_SDK_KEY" https://sdk.launchdarkly.com/sdk/latest-all > ld-prod.json`.
 
 Show the user the table. Settle every row with a `review` note before moving on:
 - **read in code but missing from the source system**: the code always gets the default today. Usually leave it out
@@ -45,15 +50,9 @@ Offline: reads `.liftover/inventory.json`, writes `.liftover/plan.json`. Pass ea
 (remote-config value), `--migrate` (migrate despite the note). Exit 2 with `UNDECIDED` lines means the plan is
 incomplete and step 3 will refuse it: settle each line with the user and rerun.
 
-How rules map, so you can explain the table:
-- Unleash strategies are OR-ed, constraints inside one are AND-ed. Each targeted flag+environment becomes one segment
-  `<flag>_<env>`: root `ANY`, one `ALL` child per strategy. The environment default is off; the segment turns it on.
-- `userId` becomes `$.identity.identifier`. A rollout % becomes `PERCENTAGE_SPLIT`: the same share of users, but not
-  the same users, because the hash differs. Say this to the user before step 3.
-- `cannot map automatically` (dates, Unleash segments, session stickiness): rebuild that flag by hand or leave it in
-  the source, then `--skip` it. `warning` lines are not blocking, but repeat them to the user.
-
-Show the user the printed table and get agreement before step 3.
+`cannot map automatically` (prerequisites, dates, source-side segments, non-user contexts) means liftover will not
+guess: the user rebuilds that flag by hand or keeps it in the source, then you `--skip` it. Repeat every `warning`
+line to the user. Before step 3, tell them that percentage rollouts keep their share of users but not the same users.
 
 ## 3. Apply, dry run first
 
@@ -71,9 +70,9 @@ a production environment (name contains `prod`, or `--production-envs`). It ends
    between, the token no longer matches and the script refuses: dry-run again and show the new list.
 
 Reruns are safe: it continues where a failed run stopped, and reports `nothing to do` when Flagsmith matches the plan.
-If someone edits a migrated segment by hand, the next dry run lists the fix. Everything created is tagged `migrated`
-and recorded in `.liftover/applied.json`; `--rollback` (dry run) and `--rollback --execute` delete it, the whole
-project if liftover created it. Roll back only before the code cutover ships; afterwards, revert the PR first.
+If someone edits a migrated segment or override by hand, the next dry run lists the fix. Everything created is tagged
+`migrated` and recorded in `.liftover/applied.json`; `--rollback` (dry run) and `--rollback --execute` delete it, the
+whole project if liftover created it. Roll back only before the code cutover ships; afterwards, revert the PR first.
 
 ## 4. Parity check
 
@@ -81,14 +80,16 @@ project if liftover created it. Roll back only before the code cutover ships; af
 python scripts/parity.py --project <name> [--users 4000]
 ```
 
-Evaluates sampled users offline in both systems with their own SDKs: Unleash from a client-token bootstrap
-(`UNLEASH_URL`, `UNLEASH_CLIENT_TOKEN_<ENV>` per environment), Flagsmith from `flagsmith environment document`.
-The users are built to hit both sides of every rule and to miss each trait sometimes.
+Evaluates sampled users offline in both systems with their own SDKs: LaunchDarkly on the step-1 files, Unleash from
+a client-token bootstrap (`UNLEASH_CLIENT_TOKEN_<ENV>` per environment), Flagsmith on `flagsmith environment
+document`. The users are built to hit both sides of every rule and to miss each trait sometimes.
 - `exact` flags must match for every user. A `FAIL` line lists example users and traits: fix the plan or the
   Flagsmith rule, re-apply, and rerun. Never move on with a failure.
 - `statistical` flags (rollouts, variants) pass when each share is within the tolerance. Tell the user how many users
   switch bucket: it is expected, and they should know before shipping.
 
+Let the user see it for themselves on one targeted user from the table:
+`flagsmith eval <flag> --identity <id> --trait plan=pro -e <env key> --jq .value`.
 It writes `.liftover/parity.md`, which becomes part of the PR body.
 
 ## 5. Code cutover and PR
@@ -104,8 +105,9 @@ The worklist gives every line to change and its Flagsmith replacement. Edit only
 - Pass the same attributes the old context had as traits. Keep their types: numbers as numbers, or numeric rules stop
   matching.
 - For an environment-variable flag, the Flagsmith flag already holds the result of the old comparison, so replace the
-  whole comparison. A config value keeps the code's old default for when the value is unset.
+  whole comparison. A value flag keeps the old call's default for when Flagsmith returns `None`.
 - Retired flags: delete the check and keep the branch users get today.
+- A `STOP` line is a flag still served by the source system: ask the user before touching it.
 
 When `--check` passes, commit on a new branch and open the PR with
 `gh pr create --title "Move feature flags to Flagsmith" --body-file .liftover/pr.md`. Do not remove the old system

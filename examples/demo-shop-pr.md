@@ -10,7 +10,7 @@
 |---|---|---|---|
 | age_gate | development | exact | same for every user |
 | beta_dashboard | development | exact | same for every user |
-| checkout_button | development | statistical | within 4 pts (gap 2.7); Unleash add_to_bag 18.4%, buy_now 50.8%, get_it_today 30.9% / Flagsmith add_to_bag 20.4%, buy_now 51.4%, get_it_today 28.2%; 2475 users switch |
+| checkout_button | development | statistical | within 4 pts (gap 2.8); Unleash add_to_bag 19.3%, buy_now 49.6%, get_it_today 31.1% / Flagsmith add_to_bag 21.4%, buy_now 50.3%, get_it_today 28.3%; 2475 users switch |
 | dark_mode | development | exact | same for every user |
 | holiday_banner | development | exact | same for every user |
 | maintenance_mode | development | exact | same for every user |
@@ -20,11 +20,11 @@
 | upload_limit_mb | development | exact | same for every user |
 | age_gate | production | exact | same for every user |
 | beta_dashboard | production | exact | same for every user |
-| checkout_button | production | statistical | within 4 pts (gap 2.5); Unleash add_to_bag 18.4%, buy_now 50.8%, get_it_today 30.9% / Flagsmith add_to_bag 20.9%, buy_now 50.4%, get_it_today 28.7%; 2391 users switch |
+| checkout_button | production | statistical | within 4 pts (gap 2.2); Unleash add_to_bag 19.3%, buy_now 49.6%, get_it_today 31.1% / Flagsmith add_to_bag 20.8%, buy_now 50.3%, get_it_today 28.9%; 2391 users switch |
 | dark_mode | production | exact | same for every user |
 | holiday_banner | production | exact | same for every user |
 | maintenance_mode | production | exact | same for every user |
-| new_checkout | production | statistical | within 4 pts (gap 1.8); Unleash off 75.4%, on 24.6% / Flagsmith off 73.6%, on 26.4%; 1454 users switch |
+| new_checkout | production | statistical | within 4 pts (gap 0.6); Unleash off 75.4%, on 24.6% / Flagsmith off 74.8%, on 25.2%; 1454 users switch |
 | new_onboarding | production | exact | same for every user |
 | pro_reports | production | exact | same for every user |
 | upload_limit_mb | production | exact | same for every user |

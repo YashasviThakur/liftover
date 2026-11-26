@@ -68,7 +68,8 @@ class Plan(unittest.TestCase):
                          {"property": "$.identity.identifier", "operator": "IN", "value": "vip-1"})
         self.assertEqual(states["or_rules"]["env"], "Production")
         self.assertFalse(states["or_rules"]["enabled"])
-        self.assertEqual(states["or_rules"]["segment_override"]["segment"], "or_rules_production")
+        self.assertEqual(states["or_rules"]["segment_overrides"],
+                         [{"segment": "or_rules_production", "enabled": True, "value": None, "priority": 0}])
 
         conds = segs["negations_production"]["rules"][0]["rules"][0]["conditions"]
         self.assertEqual([(x["operator"], x["value"]) for x in conds], [
@@ -92,6 +93,44 @@ class Plan(unittest.TestCase):
         self.assertFalse(plan["complete"])
         self.assertIn("UNDECIDED dead", p.stdout)
         self.assertIn("UNDECIDED date_rule: cannot map automatically: context field 'currentTime'", p.stdout)
+
+
+ROOT = Path(__file__).parents[1]
+
+
+class LaunchDarklyPlan(unittest.TestCase):
+    """The sandbox's LaunchDarkly SDK data, through inventory.py and plan.py."""
+
+    def test_order_or_and_prerequisites(self):
+        scripts, fx = ROOT / "skills/liftover/scripts", ROOT / "sandbox/launchdarkly"
+        with tempfile.TemporaryDirectory() as d:
+            inv, out = Path(d, "inv.json"), Path(d, "plan.json")
+            subprocess.run([sys.executable, scripts / "inventory.py", "--repo", ROOT / "demo-app-ld", "--out", inv,
+                            "--launchdarkly", f"production={fx / 'production.json'}"], check=True, capture_output=True)
+            p = subprocess.run([sys.executable, scripts / "plan.py", "--inventory", inv, "--out", out],
+                               capture_output=True, text=True)
+            self.assertEqual(p.returncode, 2)  # legacy_search undecided, upsell_banner has a prerequisite
+            self.assertIn("UNDECIDED upsell_banner: cannot map automatically: depends on prerequisite", p.stdout)
+            subprocess.run([sys.executable, scripts / "plan.py", "--inventory", inv, "--out", out, "--retire",
+                            "legacy_search", "--skip", "upsell_banner"], check=True, capture_output=True)
+            plan = json.loads(out.read_text())
+        states = {s["feature"]: s for s in plan["states"]}
+        segs = {s["name"]: s for s in plan["segments"]}
+
+        # First match wins in LaunchDarkly, so the rules keep their order as override priorities.
+        tier = states["pricing_tier"]
+        self.assertEqual((tier["enabled"], tier["value"]), (True, "usd"))
+        self.assertEqual([(o["value"], o["priority"]) for o in tier["segment_overrides"]], [("inr", 0), ("invoice", 1)])
+
+        # Neighbouring rules serving the same value become one OR-ed segment; the false fallthrough adds none.
+        pro = states["pro_reports"]["segment_overrides"]
+        self.assertEqual(len(pro), 1)
+        self.assertEqual(len(segs[pro[0]["segment"]]["rules"][0]["rules"]), 2)
+
+        # A boolean rollout becomes a percentage split; variant rollouts become multivariate weights.
+        split = segs["new_checkout_production"]["rules"][0]["rules"][0]["conditions"][0]
+        self.assertEqual((split["operator"], split["value"]), ("PERCENTAGE_SPLIT", "25"))
+        self.assertEqual(states["checkout_button"]["mv_pcts"], {"buy_now": 50.0, "get_it_today": 30.0, "add_to_bag": 20.0})
 
 
 if __name__ == "__main__":

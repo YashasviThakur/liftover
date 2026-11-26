@@ -98,7 +98,8 @@ def main():
         kind = "value" if f["source"] == "env" and f["kind"] == "value" else f["kind"]
         for ref in (f["code_refs"] if f["source"] != "env" else []):
             call = (JS if ref.split(":")[0].endswith((".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs")) else PY)[kind]
-            extra = " (value is the variant value; check flags.is_feature_enabled first)" if kind == "multivariate" else ""
+            extra = {"multivariate": " (value is the variant value; check flags.is_feature_enabled first)",
+                     "value": " (keep the old call's default for when it returns None)"}.get(kind, "")
             print(f"flag     {ref}  {k} -> {call.format(k=k)}{extra}")
         if f["source"] == "env":
             for ref in f["code_refs"]:
@@ -111,9 +112,15 @@ def main():
             print(f"retire   {ref}  {k}: delete the check and keep the branch users get today")
     for n in plan["not_migrated"]:
         if n["decision"] == "skip":
+            src = inv[n["flag"]]["source"]
             for ref in inv[n["flag"]]["code_refs"]:
-                print(f"skipped  {ref}  {n['flag']}: not in Flagsmith. Read it through Flagsmith anyway "
-                      f"(with the default_flag_handler above a missing flag is off, as it is today) unless the user says to delete the check")
+                if src == "code-only":
+                    print(f"skipped  {ref}  {n['flag']}: not in Flagsmith. Read it through Flagsmith anyway "
+                          f"(with the default_flag_handler above a missing flag is off, as it is today) "
+                          f"unless the user says to delete the check")
+                else:
+                    print(f"STOP     {ref}  {n['flag']}: still served by {src} and not migrated. After cutover it is "
+                          f"off for everyone unless it is rebuilt in Flagsmith first. Ask the user before changing this line")
 
 
 if __name__ == "__main__":

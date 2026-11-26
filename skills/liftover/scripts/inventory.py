@@ -6,6 +6,8 @@ Stdlib only.
   python inventory.py --repo PATH [--unleash] [--env-files .env.production,...]
 
 Unleash: reads UNLEASH_URL (ending /api) and UNLEASH_ADMIN_TOKEN from the environment. Read-only.
+LaunchDarkly: --launchdarkly production=ld-prod.json,... where each file is that environment's SDK data:
+  curl -H "Authorization: $LD_SDK_KEY" https://sdk.launchdarkly.com/sdk/latest-all > ld-prod.json
 """
 import argparse
 import json
@@ -104,9 +106,67 @@ def from_unleash():
     return flags
 
 
+LD_OPS = {"in": "IN", "startsWith": "STR_STARTS_WITH", "endsWith": "STR_ENDS_WITH", "contains": "STR_CONTAINS",
+          "matches": "MATCHES", "lessThan": "NUM_LT", "lessThanOrEqual": "NUM_LTE", "greaterThan": "NUM_GT",
+          "greaterThanOrEqual": "NUM_GTE", "semVerEqual": "SEMVER_EQ", "semVerLessThan": "SEMVER_LT",
+          "semVerGreaterThan": "SEMVER_GT"}  # before/after (dates) and segmentMatch stay as-is and block in plan.py
+
+
+def ld_clause(c):
+    """A LaunchDarkly clause in the same shape as an Unleash constraint, so plan.py maps both the same way."""
+    op = LD_OPS.get(c["op"], c["op"])
+    if c.get("contextKind") not in (None, "user"):
+        op = f"{op} on context kind {c['contextKind']}"  # plan.py reports it as unmappable
+    return {"attr": "userId" if c["attribute"] == "key" else c["attribute"], "op": op, "values": c["values"],
+            "inverted": bool(c.get("negate")), "case_insensitive": False}
+
+
+def from_launchdarkly(files):
+    """files: {env: path} of LaunchDarkly SDK data (GET https://sdk.launchdarkly.com/sdk/latest-all)."""
+    flags = {}
+    for env, path in files.items():
+        data = json.loads(Path(path).read_text())
+        for key, f in data["flags"].items():
+            if f.get("deleted"):
+                continue
+            var = f["variations"]
+            served = lambda s: {"result": var[s["variation"]], "rollout": None} if "variation" in s else {
+                "result": None, "rollout": [{"result": var[v["variation"]], "weight_pct": v["weight"] / 1000}
+                                            for v in s["rollout"]["variations"]]}
+            rules = [{**served(r), "conditions": [ld_clause(c) for c in r["clauses"]]} for r in f.get("rules", [])]
+            ff = flags.setdefault(key, {
+                "key": key, "source": "launchdarkly", "variations": var, "variants": [], "environments": {},
+                "kind": "boolean" if sorted(map(repr, var)) == ["False", "True"] else "value"})
+            if "rollout" in f["fallthrough"] and ff["kind"] == "value":
+                ff["kind"] = "multivariate"
+            ff["environments"][env] = {"enabled": f["on"], "rules": [], "ld_file": str(Path(path).resolve()), "ld": {
+                "targets": [{"values": t["values"], "result": var[t["variation"]]} for t in f.get("targets", [])],
+                "rules": rules, "fallthrough": served(f["fallthrough"]), "prerequisites": f.get("prerequisites", []),
+                "off_result": var[f["offVariation"]] if f.get("offVariation") is not None else None}}
+    return flags
+
+
+def summarise_ld(e):
+    if not e["enabled"]:
+        return f"off -> {e['ld']['off_result']}"
+    ld, parts = e["ld"], []
+    parts += [f"{len(t['values'])} users -> {t['result']}" for t in ld["targets"]]
+    for r in ld["rules"]:
+        what = " & ".join(f"{c['attr']} {c['op']} {','.join(map(str, c['values']))[:20]}" for c in r["conditions"])
+        parts.append(f"{what} -> {r['result'] if r['rollout'] is None else 'rollout'}")
+    fall = ld["fallthrough"]
+    parts.append("else " + (str(fall["result"]) if fall["rollout"] is None else
+                            "/".join(f"{p['result']} {p['weight_pct']:g}" for p in fall["rollout"])))
+    if ld["prerequisites"]:
+        parts.append("needs " + ",".join(p["key"] for p in ld["prerequisites"]))
+    return " | ".join(parts)
+
+
 def summarise_env(e):
     if not e:
         return "-"
+    if "ld" in e:
+        return summarise_ld(e)
     if not e["enabled"]:
         return "off"
     if not e["rules"]:
@@ -129,12 +189,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True, type=Path)
     ap.add_argument("--unleash", action="store_true", help="read flags from Unleash")
+    ap.add_argument("--launchdarkly", default="", help="env=file of LaunchDarkly SDK data, e.g. production=ld-prod.json")
     ap.add_argument("--env-files", default="", help="comma-separated, e.g. .env.production,.env.staging")
     ap.add_argument("--out", type=Path, default=Path(".liftover/inventory.json"))
     a = ap.parse_args()
 
     sdk_refs, env_refs = scan_code(a.repo)
     flags = from_unleash() if a.unleash else {}
+    if a.launchdarkly:
+        flags.update(from_launchdarkly(dict(p.split("=", 1) for p in a.launchdarkly.split(","))))
 
     env_values = read_env_files(a.repo, [n for n in a.env_files.split(",") if n])
     for name, refs in env_refs.items():

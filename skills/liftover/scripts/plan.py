@@ -12,6 +12,8 @@ Mapping (checked against self-hosted Flagsmith 2.295.2):
 - rollout % -> PERCENTAGE_SPLIT on $.identity.key. The hash differs from Unleash: the same share of users is on,
   but not the same users. parity.py measures this.
 - variants -> multivariate options with the same weights.
+- LaunchDarkly: targets and rules are checked in order and the first match wins, so each becomes a segment
+  override at the same priority; the fallthrough is the environment default. Prerequisites have no equivalent.
 """
 import argparse
 import json
@@ -62,9 +64,13 @@ def map_condition(c, warnings):
             raise Unmappable(f"inverted {op} on {attr}")
         return [cond(prop, "REGEX", ("(?i)" if ci else "") + STR_PATTERN[op].format(alt))]
     if op in COMPARE:
+        if len(vals) != 1:
+            raise Unmappable(f"{op} on {attr} with {len(vals)} values")
         suffix = ":semver" if op.startswith("SEMVER") else ""
         return [cond(prop, COMPARE[op][inv], vals[0] + suffix)]
-    raise Unmappable(f"operator {op} on {attr}")
+    if op == "MATCHES" and not inv:  # LaunchDarkly regex: a match anywhere in the value
+        return [cond(prop, "REGEX", ".*(?:" + "|".join(vals) + ")")]
+    raise Unmappable(f"{'negated ' if inv else ''}operator {op} on {attr}")
 
 
 def map_rule(r, warnings):
@@ -95,7 +101,8 @@ def plan_flag(f, envs, as_config):
     """-> (feature, states, segments, warnings)."""
     warnings, segments, states = [], [], []
     feature = {"name": f["key"], "description": f.get("description") or f"migrated from {f['source']}",
-               "type": "STANDARD", "initial_value": None, "mv_options": []}
+               "type": "STANDARD", "initial_value": None, "mv_options": [],
+               "kind": "value" if as_config else ("multivariate" if f["kind"] == "multivariate" else "boolean")}
     if f["source"] == "env":
         for env in envs:
             e = f["environments"].get(env)
@@ -138,20 +145,97 @@ def plan_flag(f, envs, as_config):
                 segments.append({"name": name, "flag": f["key"], "env": env, "rules": [
                     {"type": "ANY", "conditions": [],
                      "rules": [{"type": "ALL", "rules": [], "conditions": c} for c in children]}]})
-                state["segment_override"] = {"segment": name, "enabled": True}
+                state["segment_overrides"] = [{"segment": name, "enabled": True, "value": None, "priority": 0}]
+        states.append(state)
+    return feature, states, segments, warnings
+
+
+def plan_ld_flag(f, envs):
+    """LaunchDarkly: targets, then rules in order (first match wins), then fallthrough. Each becomes a segment
+    override at the same priority, so Flagsmith checks them in the same order. -> (feature, states, segments, warnings)"""
+    warnings, segments, states = [], [], []
+    kind, variations = f["kind"], f["variations"]
+    feature = {"name": f["key"], "description": f.get("description") or "migrated from launchdarkly",
+               "type": "MULTIVARIATE" if kind == "multivariate" else "STANDARD", "kind": kind,
+               "initial_value": None, "mv_options": []}
+    if kind == "multivariate":
+        feature["mv_options"] = [{"value": str(v)} for v in variations]
+        feature["initial_value"] = str(variations[0])
+    result = lambda v: (bool(v), None) if kind == "boolean" else (True, str(v))
+    split = lambda pct: cond("$.identity.key", "PERCENTAGE_SPLIT", f"{pct:g}")
+
+    for env in envs:
+        e = f["environments"].get(env)
+        if e is None:
+            states.append({"env": env, "enabled": False, "value": None})
+            warnings.append(f"not in launchdarkly {env}: planned as off")
+            continue
+        ld = e["ld"]
+        if ld["prerequisites"]:
+            raise Unmappable(f"depends on prerequisite flags {[p['key'] for p in ld['prerequisites']]} in {env}")
+        if not e["enabled"]:
+            off = ld["off_result"]
+            en, val = result(off) if off is not None else (False, None)  # no off variation: the code default
+            states.append({"env": env, "enabled": en, "value": val})
+            continue
+
+        overrides = []  # [conditions of each OR-ed child, enabled, value], in LaunchDarkly's evaluation order
+
+        def serve(conds, en, val):
+            if overrides and overrides[-1][1:] == [en, val]:
+                overrides[-1][0].append(conds)  # neighbours serving the same value: one segment, OR-ed
+            else:
+                overrides.append([[conds], en, val])
+
+        for t in ld["targets"]:
+            serve([cond("$.identity.identifier", "IN", ",".join(t["values"]))], *result(t["result"]))
+        for r in ld["rules"]:
+            conds = [x for c in r["conditions"] for x in map_condition(c, warnings)]
+            if not conds:
+                raise Unmappable(f"a rule with no clauses in {env}")
+            if r["rollout"] is None:
+                serve(conds, *result(r["result"]))
+            elif kind == "boolean":
+                share = sum(p["weight_pct"] for p in r["rollout"] if p["result"] is True)
+                serve(conds + [split(share)], True, None)
+                serve(conds, False, None)
+            else:
+                raise Unmappable(f"a percentage rollout inside a targeting rule in {env}")
+
+        state = {"env": env, "enabled": False, "value": None}
+        fall = ld["fallthrough"]
+        if fall["rollout"] is None:
+            state["enabled"], state["value"] = result(fall["result"])
+        elif kind == "boolean":
+            share = sum(p["weight_pct"] for p in fall["rollout"] if p["result"] is True)
+            serve([split(share)], True, None)
+        else:
+            if overrides:
+                # shortcut: variant weights per segment override are not planned yet; add them when a user needs it.
+                raise Unmappable(f"variant rollout combined with targeting in {env}")
+            state["enabled"] = True
+            state["mv_pcts"] = {str(p["result"]): p["weight_pct"] for p in fall["rollout"]}
+        # A trailing override that serves the default changes nothing.
+        while overrides and overrides[-1][1:] == [state["enabled"], state["value"]]:
+            overrides.pop()
+        state["segment_overrides"] = []
+        for i, (children, en, val) in enumerate(overrides):
+            name = f"{f['key']}_{env}" + (f"_{i + 1}" if len(overrides) > 1 else "")
+            segments.append({"name": name, "flag": f["key"], "env": env, "rules": [
+                {"type": "ANY", "conditions": [], "rules": [{"type": "ALL", "rules": [], "conditions": c}
+                                                            for c in children]}]})
+            state["segment_overrides"].append({"segment": name, "enabled": en, "value": val, "priority": i})
         states.append(state)
     return feature, states, segments, warnings
 
 
 def summarise(feature, states):
     cells = []
+    show = lambda en, val: val if val is not None else ("on" if en else "off")
     for s in states:
-        if s.get("segment_override"):
-            cells.append(f"{s['env']}: off, on for segment {s['segment_override']['segment']}")
-        elif s.get("value") is not None:
-            cells.append(f"{s['env']}: {s['value']}")
-        else:
-            cells.append(f"{s['env']}: {'on' if s['enabled'] else 'off'}")
+        cells.append(f"{s['env']}: {show(s['enabled'], s.get('value'))}")
+        for o in s.get("segment_overrides", []):
+            cells[-1] += f", {show(o['enabled'], o['value'])} for {o['segment']}"
         if s.get("mv_pcts"):
             cells[-1] += " [" + "/".join(f"{k} {v:g}" for k, v in s["mv_pcts"].items()) + "]"
     return f"{feature['name']} | {feature['type']} | " + " | ".join(cells)
@@ -194,7 +278,8 @@ def main():
             undecided.append(f"{key}: nothing to migrate from (code-only); use --skip or --retire")
             continue
         try:
-            feature, states, segments, warnings = plan_flag(f, envs, as_config=(d == "config"))
+            feature, states, segments, warnings = (plan_ld_flag(f, envs) if f["source"] == "launchdarkly"
+                                                   else plan_flag(f, envs, as_config=(d == "config")))
         except Unmappable as e:
             undecided.append(f"{key}: cannot map automatically: {e}; rebuild by hand, then --skip it")
             continue
