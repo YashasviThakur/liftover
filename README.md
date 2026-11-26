@@ -61,7 +61,7 @@ The full table is in [references/mapping.md](skills/liftover/references/mapping.
 - **Parity, checked by LaunchDarkly's own SDK:** 14/14 pass, including the ordered `pricing_tier` for every user. See [examples/launchdarkly-parity.md](examples/launchdarkly-parity.md).
 
 **Both demos:**
-- **Token use (measured):** a fresh agent given only the skill and the Unleash shop finished all five steps in **86,990 tokens**, 11 tool calls, 3 minutes 4 seconds (Claude Sonnet 5.5 subagent, 2026-11-26; the count is the harness's total for that agent). Result: 10 flags migrated, 1 retired, 1 skipped, parity 20/20, cutover committed. Earlier estimate of the skill's input alone: about 3.8k tokens against 10.6k for the raw data.
+- **Token use (measured):** a fresh agent given only the skill and the Unleash shop finished all five steps in **85,637 tokens**, 10 tool calls, 2 min 46 s (Claude Sonnet 5.5 subagent, harness total, 2026-11-27, `SKILL.md` ~1.2k tokens). The first run, on the 7.7 KB skill, took 86,990. Both: 10 flags migrated, 1 retired, 1 skipped, parity 20/20, cutover committed. Trimming the instructions by 37% saved about 1.5% of the run: most tokens are the agent re-reading its own context and the code it edits, not the skill. Earlier estimate of the skill's input alone: about 3.8k tokens against 10.6k for the raw data.
 
 ## Run the demo
 
