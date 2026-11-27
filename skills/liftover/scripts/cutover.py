@@ -91,6 +91,7 @@ def main():
     print("              default_flag_handler=lambda name: DefaultFlag(enabled=False, value=None))"
           "  # unknown flag -> off, like the old SDK; without it the Python SDK raises")
     print("          flags = flagsmith.get_identity_flags(user_id, traits={...same attributes as the old context...})")
+    print("          no user in scope (a job, a startup check): flagsmith.get_environment_flags() instead, same methods")
     print("  js:     flagsmith.init({ environmentID }); identify(userId, traits)")
     for ref in clients:
         print(f"client   {ref}")
@@ -106,7 +107,9 @@ def main():
                 where, line = ref.split(": ", 1)
                 hint = ("keep the code's default when the value is None" if kind == "value"
                         else "the Flagsmith flag already holds the result of this comparison")
-                print(f"env      {where}  {f['env_var']} -> {PY[kind].format(k=k)}  ({hint})  was: {line}")
+                if line[:1] not in (" ", "	"):  # read once at import: it would freeze one answer for every user
+                    hint += "; module-level constant: move the read into the function that has the user"
+                print(f"env      {where}  {f['env_var']} -> {PY[kind].format(k=k)}  ({hint})  was: {line.strip()}")
     for k in sorted(retired):
         for ref in inv[k]["code_refs"]:
             print(f"retire   {ref}  {k}: delete the check and keep the branch users get today")

@@ -47,7 +47,7 @@ def scan_code(repo: Path):
                 name = next(g for g in m.groups() if g)
                 if not CLIENT_CONFIG.match(name):
                     # Keep the line: how the code reads the value ("== 'true'", "== '1'") decides its meaning.
-                    env_refs.setdefault(name, []).append(f"{rel}:{n}: {line.strip()[:120]}")
+                    env_refs.setdefault(name, []).append(f"{rel}:{n}: {line.rstrip()[:120]}")
     return sdk_refs, env_refs
 
 

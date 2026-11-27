@@ -9,6 +9,16 @@ SCRIPT = Path(__file__).parents[1] / "skills/liftover/scripts/inventory.py"
 
 
 class InventoryCodeScan(unittest.TestCase):
+    def test_env_read_keeps_indentation(self):
+        """cutover tells module-level constants from reads inside a function by the leading whitespace."""
+        sys.path.insert(0, str(SCRIPT.parent))
+        from inventory import scan_code
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "a.py").write_text('TOP = os.getenv("FEATURE_A")\ndef f():\n    return os.getenv("FEATURE_B")\n')
+            refs = scan_code(Path(d))[1]
+        self.assertFalse(refs["FEATURE_A"][0].split(": ", 1)[1].startswith(" "))
+        self.assertTrue(refs["FEATURE_B"][0].split(": ", 1)[1].startswith(" "))
+
     def test_finds_sdk_env_missing_and_config(self):
         with tempfile.TemporaryDirectory() as d:
             repo = Path(d)
