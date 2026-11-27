@@ -12,6 +12,12 @@ Ask your agent *"move us to Flagsmith"*. Liftover then:
 
 Migrating flags is the job where an agent gets things quietly wrong. LaunchDarkly ORs its rules and checks them in order, with the first match winning. Unleash ORs its strategies and ANDs the constraints inside one. Flagsmith's own LaunchDarkly importer gets the OR shape wrong ([#8721](https://github.com/Flagsmith/flagsmith/issues/8721)), and the importer docs tell you to check the results by hand. Liftover makes that check a machine's job: a migration is done when the code reads Flagsmith and no user's flags changed without someone deciding they should. The check uses each tool's own SDK, so it tests the real engines, not Liftover's reading of them.
 
+## What sets it apart
+
+A parity check can compare against a flags file and a checker the tool defines itself. Liftover starts from a real LaunchDarkly or Unleash export or the code's own environment variables, and its parity check runs that vendor's own SDK against Flagsmith's, so it tests the real engines. It also rewrites the flag reads and opens the cutover PR, and writes production only after you approve the exact change list.
+
+Known trade-off: a percentage rollout keeps its share but not its exact users, because the tools hash differently, and Liftover reports how many switch. One way to keep the same users is to send the old bucket (0-99) as a trait and use a `LESS_THAN` rule instead of Flagsmith's split. Liftover does not do this, because the app would then have to compute and send that trait on every evaluation.
+
 ## The five steps
 
 | Step | Script | Reads / writes |
