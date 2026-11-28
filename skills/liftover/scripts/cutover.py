@@ -39,7 +39,10 @@ def write_pr_body(plan, migrated):
             f"environments: {', '.join(plan['environments'])}. Everything created is tagged `migrated`.",
             "- Unknown flags still answer off (default_flag_handler), as before.",
             "- Percentage rollouts and variants keep their shares, but Flagsmith hashes users differently, "
-            "so some users switch bucket once (counted below).", ""]
+            "so some users switch bucket once (counted below)." if not plan.get("preserved") else
+            "- Rollouts keep their exact users: the app sends Unleash's bucket number as a trait "
+            f"({', '.join(p['trait'] for p in plan['preserved'])}), so nobody switches. Variants keep their shares only.",
+            ""]
     body += [l.rstrip("\n") for l in parity.read_text().splitlines()]
     body += ["", "### Rollback",
              "Revert this PR. To also remove what was created in Flagsmith: `python apply.py --rollback --execute`.",
@@ -76,9 +79,13 @@ def main():
             print(f"old client {line}")
         for k in missing:
             print(f"not read from Flagsmith: {k}")
-        ok = not (old or clients or missing)
+        text = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in files(a.repo))
+        no_trait = [p["trait"] for p in plan.get("preserved", []) if "unleash_bucket(" not in text]
+        for t in no_trait:
+            print(f"bucket trait not sent: {t} (copy scripts/bucket.py into the app, pass unleash_bucket(group, user_id))")
+        ok = not (old or clients or missing or no_trait)
         if not ok:
-            print(f"cutover incomplete: {len(old) + len(clients) + len(missing)} items")
+            print(f"cutover incomplete: {len(old) + len(clients) + len(missing) + len(no_trait)} items")
             sys.exit(1)
         write_pr_body(plan, migrated)
         print("cutover complete: every migrated flag is read from Flagsmith, nothing reads the old system "
@@ -93,6 +100,9 @@ def main():
     print("          flags = flagsmith.get_identity_flags(user_id, traits={...same attributes as the old context...})")
     print("          no user in scope (a job, a startup check): flagsmith.get_environment_flags() instead, same methods")
     print("  js:     flagsmith.init({ environmentID }); identify(userId, traits)")
+    for p in plan.get("preserved", []):
+        print(f"bucket   {p['flag']}: copy scripts/bucket.py into the app; wherever the user is identified pass trait "
+              f"{p['trait']}=unleash_bucket({p['group']!r}, user_id) so the rollout keeps the same users")
     for ref in clients:
         print(f"client   {ref}")
     for k, f in sorted(migrated.items()):

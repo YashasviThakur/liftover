@@ -16,7 +16,7 @@ Migrating flags is the job where an agent gets things quietly wrong. LaunchDarkl
 
 A parity check can compare against a flags file and a checker the tool defines itself. Liftover starts from a real LaunchDarkly or Unleash export or the code's own environment variables, and its parity check runs that vendor's own SDK against Flagsmith's, so it tests the real engines. It also rewrites the flag reads and opens the cutover PR, and writes production only after you approve the exact change list.
 
-Known trade-off: a percentage rollout keeps its share but not its exact users, because the tools hash differently, and Liftover reports how many switch. One way to keep the same users is to send the old bucket (0-99) as a trait and use a `LESS_THAN` rule instead of Flagsmith's split. Liftover does not do this, because the app would then have to compute and send that trait on every evaluation.
+Rollouts keep the same users, if you ask: `plan.py --preserve-rollouts` rebuilds an Unleash percentage rollout as the rule `unleash_bucket_<group> <= %`, and the cutover has the app send Unleash's own 1-100 bucket (`scripts/bucket.py`, a pure-Python murmur3 that agrees with the real Unleash SDK on 2,000 users) as that trait. Parity then holds user for user ([examples/unleash-preserve-parity.md](examples/unleash-preserve-parity.md): `new_checkout` 25% is "same for every user"). Without the option, and for variants and LaunchDarkly rollouts, the share is kept but not the exact users, because the tools hash differently, and Liftover reports how many switch.
 
 ## The five steps
 
@@ -85,7 +85,7 @@ Then load `sandbox/.env` into the shell, set `FLAGSMITH_ORGANISATION`, and run t
 
 - **Sources:** LaunchDarkly (from SDK data files), Unleash and environment variables.
 - **Not converted:** LaunchDarkly prerequisites and segment-match clauses, Unleash segments, date constraints and non-user stickiness are reported, not converted.
-- **Rollouts and variants:** keep their shares, not their exact users, because the two tools hash differently. The report counts the users who switch.
+- **Rollouts and variants:** Unleash rollouts keep their exact users with `--preserve-rollouts`. Variants and LaunchDarkly rollouts keep their shares, not their exact users, because the tools hash differently. The report counts the users who switch.
 - **Cutover hints:** written for Python and JavaScript SDK calls.
 
 ## Layout

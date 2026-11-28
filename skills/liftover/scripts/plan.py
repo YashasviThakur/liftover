@@ -10,7 +10,8 @@ Mapping (checked against self-hosted Flagsmith 2.295.2):
   whose root rule is ANY with one ALL child per strategy. Flagsmith's LaunchDarkly importer ANDs these (issue #8721).
 - userId -> $.identity.identifier, so user lists stay segment rules, not identity overrides.
 - rollout % -> PERCENTAGE_SPLIT on $.identity.key. The hash differs from Unleash: the same share of users is on,
-  but not the same users. parity.py measures this.
+  but not the same users. parity.py measures this. With --preserve-rollouts the rule is instead
+  `unleash_bucket_<group> <= %` and the app sends bucket.py's number as that trait, so the same users stay on.
 - variants -> multivariate options with the same weights.
 - LaunchDarkly: targets and rules are checked in order and the first match wins, so each becomes a segment
   override at the same priority; the fallthrough is the environment default. Prerequisites have no equivalent.
@@ -73,8 +74,9 @@ def map_condition(c, warnings):
     raise Unmappable(f"{'negated ' if inv else ''}operator {op} on {attr}")
 
 
-def map_rule(r, warnings):
-    """One Unleash strategy -> the conditions of one ALL rule ([] means everyone)."""
+def map_rule(r, warnings, flag=None, preserved=None):
+    """One Unleash strategy -> the conditions of one ALL rule ([] means everyone).
+    With `preserved` (a list), a rollout keeps its exact users: the app sends Unleash's 1-100 bucket as a trait."""
     if r["strategy"] not in ("flexibleRollout", "default"):
         raise Unmappable(f"strategy {r['strategy']!r}")
     if r["segments"]:
@@ -84,7 +86,14 @@ def map_rule(r, warnings):
     if r["rollout_percent"] < 100:
         if r.get("stickiness") not in (None, "default", "userId"):
             raise Unmappable(f"rollout sticky on {r['stickiness']!r}; Flagsmith splits by identity only")
-        out.append(cond("$.identity.key", "PERCENTAGE_SPLIT", f"{r['rollout_percent']:g}"))
+        if preserved is not None:
+            group = r.get("group_id") or flag
+            trait = f"unleash_bucket_{group}"
+            if not any(p["trait"] == trait for p in preserved):
+                preserved.append({"flag": flag, "group": group, "trait": trait})
+            out.append(cond(trait, "LESS_THAN_INCLUSIVE", str(int(r["rollout_percent"]))))  # bucket is an integer
+        else:
+            out.append(cond("$.identity.key", "PERCENTAGE_SPLIT", f"{r['rollout_percent']:g}"))
     return out
 
 
@@ -97,7 +106,7 @@ def env_var_enabled(f, value):
     return (value == literal) == (op == "==")
 
 
-def plan_flag(f, envs, as_config):
+def plan_flag(f, envs, as_config, preserved=None):
     """-> (feature, states, segments, warnings)."""
     warnings, segments, states = [], [], []
     feature = {"name": f["key"], "description": f.get("description") or f"migrated from {f['source']}",
@@ -137,7 +146,7 @@ def plan_flag(f, envs, as_config):
             vs = json.loads(variant_sets.pop())
             state["mv_pcts"] = {str(v["value"] if v["value"] is not None else v["key"]): v["weight_pct"] for v in vs}
         if e["enabled"]:
-            children = [map_rule(r, warnings) for r in e["rules"]]
+            children = [map_rule(r, warnings, f["key"], preserved) for r in e["rules"]]
             if not children or any(c == [] for c in children):
                 state["enabled"] = True  # some strategy matches everyone
             else:
@@ -248,6 +257,8 @@ def main():
     for d in ("retire", "skip", "config", "migrate"):
         ap.add_argument(f"--{d}", default="", help="comma-separated flag keys")
     ap.add_argument("--env-map", default="", help="source=Flagsmith environment names, e.g. production=Production")
+    ap.add_argument("--preserve-rollouts", action="store_true",
+                    help="Unleash rollouts keep their exact users: the app sends bucket.py's number as a trait")
     a = ap.parse_args()
 
     flags = json.loads(a.inventory.read_text())["flags"]
@@ -264,7 +275,8 @@ def main():
 
     plan = {"environments": [env_map.get(e, e) for e in envs], "env_map": {e: env_map.get(e, e) for e in envs},
             "inventory": str(a.inventory), "features": [], "states": [], "segments": [],
-            "not_migrated": [], "warnings": {}}
+            "not_migrated": [], "warnings": {}, "preserved": []}
+    preserved = plan["preserved"] if a.preserve_rollouts else None
     undecided = []
     for key, f in sorted(flags.items()):
         d = decided.get(key)
@@ -279,7 +291,7 @@ def main():
             continue
         try:
             feature, states, segments, warnings = (plan_ld_flag(f, envs) if f["source"] == "launchdarkly"
-                                                   else plan_flag(f, envs, as_config=(d == "config")))
+                                                   else plan_flag(f, envs, as_config=(d == "config"), preserved=preserved))
         except Unmappable as e:
             undecided.append(f"{key}: cannot map automatically: {e}; rebuild by hand, then --skip it")
             continue
@@ -306,6 +318,8 @@ def main():
     for key, ws in plan["warnings"].items():
         for w in ws:
             print(f"warning {key}: {w}")
+    for p in plan["preserved"]:
+        print(f"preserved {p['flag']}: same users via trait {p['trait']} (cutover must send it)")
     for u in undecided:
         print(f"UNDECIDED {u}")
     if undecided:

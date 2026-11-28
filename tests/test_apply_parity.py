@@ -50,6 +50,7 @@ class Parity(unittest.TestCase):
         self.assertFalse(hashed(self.FLAGS["f"], "production"))
         rolled = {"environments": {"production": {"rules": [{"rollout_percent": 25.0}]}}}
         self.assertTrue(hashed(rolled, "production"))
+        self.assertFalse(hashed({**rolled, "key": "r"}, "production", {"r"}))  # preserved: must match user for user
 
 
 if __name__ == "__main__":

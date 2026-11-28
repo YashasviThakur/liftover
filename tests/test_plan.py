@@ -87,6 +87,17 @@ class Plan(unittest.TestCase):
         self.assertTrue(states["dark_mode"]["enabled"])  # "1" == "1"
         self.assertEqual({n["flag"] for n in plan["not_migrated"]}, {"dead", "date_rule"})
 
+    def test_preserve_rollouts_keeps_users(self):
+        p, plan = run("--retire", "dead", "--skip", "date_rule", "--preserve-rollouts")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(plan["preserved"], [{"flag": "negations", "group": "g", "trait": "unleash_bucket_g"}])
+        segs = {s["name"]: s for s in plan["segments"]}
+        last = segs["negations_production"]["rules"][0]["rules"][0]["conditions"][-1]
+        self.assertEqual(last, {"property": "unleash_bucket_g", "operator": "LESS_THAN_INCLUSIVE", "value": "10"})
+        self.assertIn("preserved negations", p.stdout)
+        _, plain = run("--retire", "dead", "--skip", "date_rule")  # off by default
+        self.assertEqual(plain["preserved"], [])
+
     def test_undecided_and_unmappable_block(self):
         p, plan = run()
         self.assertEqual(p.returncode, 2)

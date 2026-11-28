@@ -23,6 +23,7 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
+from bucket import unleash_bucket
 from cli import fs
 from plan import env_var_enabled
 
@@ -125,12 +126,13 @@ def source_value(f, env, client, uid, traits):
     return on, ((v.get("payload") or {}).get("value") or v["name"]) if v.get("enabled") else None
 
 
-def hashed(f, env):
+def hashed(f, env, preserved=()):
     e = f["environments"].get(env) or {}
     ld = e.get("ld")
     if ld:
         return e["enabled"] and any(x["rollout"] for x in ld["rules"] + [ld["fallthrough"]])
-    return any(r["rollout_percent"] < 100 or r.get("variants") for r in e.get("rules", []))
+    keeps_users = f.get("key") in preserved  # its rollouts use Unleash's own bucket, so they must match user for user
+    return any((r["rollout_percent"] < 100 and not keeps_users) or r.get("variants") for r in e.get("rules", []))
 
 
 def main():
@@ -146,6 +148,8 @@ def main():
     flags = json.loads(Path(plan["inventory"]).read_text())["flags"]
     features = {f["name"]: f for f in plan["features"]}
     users = sample_users(flags, a.users, a.seed)
+    kept = plan.get("preserved", [])  # rollouts whose users the app tells Flagsmith by trait
+    kept_flags = {p["flag"] for p in kept}
     results, tmp = [], Path(tempfile.mkdtemp(dir=STATE))
     for src_env, fs_env in plan["env_map"].items():
         needs_unleash = any(flags[k]["source"] == "unleash" for k in features)
@@ -158,7 +162,7 @@ def main():
         fl = flagsmith_client(a.project, fs_env, tmp)
         rows = {k: [] for k in features}
         for uid, traits in users:
-            got = fl.get_identity_flags(uid, traits)
+            got = fl.get_identity_flags(uid, {**traits, **{p["trait"]: unleash_bucket(p["group"], uid) for p in kept}})
             for k in features:
                 src = source_value(flags[k], src_env, ld if flags[k]["source"] == "launchdarkly" else un, uid, traits)
                 on = got.is_feature_enabled(k)
@@ -174,7 +178,7 @@ def main():
         for k, r in rows.items():
             differ = [(u, t, s, d) for u, t, s, d in r if s != d]
             res = {"flag": k, "env": fs_env, "users": len(r), "differ": len(differ)}
-            if hashed(flags[k], src_env):
+            if hashed(flags[k], src_env, kept_flags):
                 # Targeted ids are sampled many times with different traits; for shares count each identity once.
                 once = list({row[0]: row for row in reversed(r)}.values())
                 label = lambda x: x[1] if x[1] is not None else ("on" if x[0] else "off")

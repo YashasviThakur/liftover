@@ -28,13 +28,14 @@ say so; not read anywhere -> default retire; config value -> migrate as remote c
 An env-var flag showing `-` has no value in the given env files: it migrates as off, and the plan says so.
 
 ## 2. Plan
-`python scripts/plan.py --retire k1,k2 --skip k3 --config k4 [--migrate k5] [--env-map production=Production]`
+`python scripts/plan.py --retire k1,k2 --skip k3 --config k4 [--migrate k5] [--env-map production=Production] [--preserve-rollouts]`
 
 Offline. Each step-1 decision is one option: `--retire` (removed from code in step 5), `--skip` (left alone),
 `--config` (remote-config value), `--migrate` (despite the note). Exit 2 with `UNDECIDED` lines: settle them, rerun.
 `cannot map automatically` (prerequisites, dates, source-side segments) is never guessed: the user rebuilds it by hand
-or keeps it in the source, then `--skip` it. Repeat every `warning`. Tell the user percentage rollouts keep their share
-of users but not the same users.
+or keeps it in the source, then `--skip` it. Repeat every `warning`. Unleash percentage rollouts: by default they keep
+their share of users but not the same users; ask the user, and with `--preserve-rollouts` they keep the same users (the
+cutover then sends Unleash's bucket number as a trait, see step 5).
 
 ## 3. Apply, dry run first
 ```
@@ -57,6 +58,7 @@ Spot-check: `flagsmith eval <flag> --identity <id> --trait plan=pro -e <env key>
 ## 5. Cutover
 `python scripts/cutover.py --repo .` (worklist), then `--check` until it passes (writes `.liftover/pr.md`).
 
+A `bucket` line (only with `--preserve-rollouts`): copy `scripts/bucket.py` into the app and pass the named trait.
 Edit only the listed lines and the client setup: one Flagsmith client whose `default_flag_handler` returns off (the
 Python SDK raises without it); old context attributes become traits with their types kept (numbers stay numbers);
 an env-var flag replaces the whole comparison; a value flag keeps the old default for `None`; retired flags lose the check
