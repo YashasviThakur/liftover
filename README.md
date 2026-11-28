@@ -68,6 +68,17 @@ The full table is in [references/mapping.md](skills/liftover/references/mapping.
 
 **Both demos:**
 - **Token use (measured):** a fresh agent given only the skill and the Unleash shop finished all five steps in **85,637 tokens**, 10 tool calls, 2 min 46 s (Claude Sonnet 5.5 subagent, harness total, 2026-11-27, `SKILL.md` ~1.2k tokens). The first run, on the 7.7 KB skill, took 86,990. Both: 10 flags migrated, 1 retired, 1 skipped, parity 20/20, cutover committed. Trimming the instructions by 37% saved about 1.5% of the run: most tokens are the agent re-reading its own context and the code it edits, not the skill. Earlier estimate of the skill's input alone: about 3.8k tokens against 10.6k for the raw data.
+- **With and without the skill (same task, same shop, same model, 2026-11-28):** both agents migrated the Unleash shop to a fresh Flagsmith project and edited the code. Both results were scored by the same `parity.py`.
+
+  | | without the skill | with the skill (`--preserve-rollouts`) |
+  |---|---|---|
+  | Tokens (harness total) | 123,825 | **85,613** (31% fewer) |
+  | Tool calls / time | 19 / 4 min 08 s | **9 / 1 min 54 s** |
+  | Parity, 20 flag x environment checks | 19 pass, 1 differs (a config value set in development that Unleash left unset) | **20 pass** |
+  | `new_checkout` 25% rollout | same share, different users (the agent says so) | **same users** (bucket trait) |
+  | Dry run, production token, rollback, parity report, PR body | none | all |
+
+  Honest reading: on a small shop a capable agent gets the rules right without the skill, and its parity score is only 19/20 once `userId` is sent as the trait its own code sends (a first score of 16/20 was my harness not sending it). What the skill adds is fewer tokens and turns, the same users on rollouts, and proof and safety the agent would otherwise skip. The harder the rules (LaunchDarkly ordering, AND vs OR), the more the proof matters; that is what the injected-bug demo shows. One run each, so treat the token gap as indicative.
 
 ## Run the demo
 
