@@ -8,6 +8,39 @@ Ask your agent *"move us to Flagsmith"*. Liftover then:
 3. Evaluates thousands of sampled users in both systems with their own SDKs.
 4. Rewrites the flag reads and opens the PR with the parity report as its body.
 
+## For judges (Track 04: Flagsmith Agent Skills)
+
+**One sentence:** ask your agent "move us to Flagsmith" and Liftover does the whole job (inventory, plan, dry-run, apply, per-user parity proof, cutover PR) from LaunchDarkly, Unleash or homegrown environment-variable flags, and refuses to ship a PR while the proof fails.
+
+**Check it in two minutes, no servers** (Python 3.12): `pip install UnleashClient && python -m unittest discover -s tests -v`. The tests compare Liftover's hashing with the real Unleash SDK on thousands of users, and test the plan, the cutover gate and the explanations. The full demo needs Docker: the steps are under "Run the demo", and the recorded reports are in [examples/](examples/).
+
+**The track's four criteria**
+
+| Criterion | Evidence |
+|---|---|
+| Completes the whole job | Five steps from the source system to a PR whose body is the parity report: inventory (flags the code reads, dead flags, flags missing from the source), plan, apply with rollback, parity, cutover. Nothing else here migrates from a real LaunchDarkly or Unleash export, or the code's own env vars ("Move us to Flagsmith" on the event page). |
+| Token efficiency | Skill file about 1.3k tokens; every script prints one line per flag. Measured on the same task and shop (below): **85,613 tokens, 9 tool calls** with the skill against **123,825 and 19 calls** without. These are full-run totals from the harness, not just the skill file, so they are larger than counts that cover only instructions and output. |
+| Creative use of the CLI | `flagsmith environment document` feeds the Flagsmith SDK offline, so parity needs no live evaluation traffic; `flagsmith api` is the escape hatch for what the CLI lacks (feature-segments, pinning override values); `feature`, `segment`, `flag update` and `project` do the rest, all with `--json` and `--no-input`. |
+| Safety around production | Dry run first, with production lines marked `PROD`; production is written only with `--confirm-production <token>` for exactly that list; reruns are idempotent and repair drift; everything created is tagged `migrated` and `--rollback` removes it; the cutover check refuses to produce a PR while parity is missing or failing; unmappable rules (LaunchDarkly prerequisites, date rules, Unleash segments) are refused and reported, never guessed; flag data is treated as data, not instructions. |
+
+**Measured, with and without the skill** (same Unleash shop, same model, 2026-11-28, one run each)
+
+| | without the skill | with the skill |
+|---|---|---|
+| Tokens (harness total) | 123,825 | **85,613** |
+| Tool calls / time | 19 / 4 min 08 s | **9 / 1 min 54 s** |
+| Parity, 20 flag x environment checks | 19 pass | **20 pass** |
+| Rollouts and variants | same share, different users | **same users** |
+| Dry run, production token, rollback, parity report | none | all |
+
+The agent without the skill did well on a small shop (its first score of 16/20 was my checker not sending the `userId` trait its code sends). What the skill adds is fewer tokens and turns, the same users on rollouts and variants, and proof and safety the agent would otherwise skip. One run each: treat the token gap as indicative.
+
+**Where it earns its keep:** the AND-versus-OR rule shape that Flagsmith's own importer gets wrong ([#8721](https://github.com/Flagsmith/flagsmith/issues/8721)). Changing one demo rule to that shape makes parity print `FAIL pro_reports production: 873 users differ`, with example users, the rule Flagsmith got and the likely cause.
+
+**Upstream:** filed [Flagsmith/flagsmith#9163](https://github.com/Flagsmith/flagsmith/issues/9163) (a 500 when a percentage-split condition has no `property`), found while building the migration.
+
+**Limits, stated first:** variants keep the same users only for one strategy that applies to everyone (flags with conditions or several strategies, and the variant weights in that case, fall back to the share); LaunchDarkly rollouts and variants keep their share but not their exact users (the report counts who switches); Unleash segments, LaunchDarkly prerequisites and date rules are reported, not converted; cutover hints cover Python and JavaScript. See "Limits" below.
+
 ## Why
 
 Migrating flags is the job where an agent gets things quietly wrong. LaunchDarkly ORs its rules and checks them in order, with the first match winning. Unleash ORs its strategies and ANDs the constraints inside one. Flagsmith's own LaunchDarkly importer gets the OR shape wrong ([#8721](https://github.com/Flagsmith/flagsmith/issues/8721)), and the importer docs tell you to check the results by hand. Liftover makes that check a machine's job: a migration is done when the code reads Flagsmith and no user's flags changed without someone deciding they should. The check uses each tool's own SDK, so it tests the real engines, not Liftover's reading of them.
@@ -16,7 +49,7 @@ Migrating flags is the job where an agent gets things quietly wrong. LaunchDarkl
 
 A parity check can compare against a flags file and a checker the tool defines itself. Liftover starts from a real LaunchDarkly or Unleash export or the code's own environment variables, and its parity check runs that vendor's own SDK against Flagsmith's, so it tests the real engines. It also rewrites the flag reads and opens the cutover PR, and writes production only after you approve the exact change list.
 
-Rollouts keep the same users, if you ask: `plan.py --preserve-rollouts` rebuilds an Unleash percentage rollout as the rule `unleash_bucket_<group> <= %`, and the cutover has the app send Unleash's own 1-100 bucket (`scripts/bucket.py`, a pure-Python murmur3 that agrees with the real Unleash SDK on 2,000 users) as that trait. Parity then holds user for user ([examples/unleash-preserve-parity.md](examples/unleash-preserve-parity.md): `new_checkout` 25% is "same for every user"). Without the option, and for variants and LaunchDarkly rollouts, the share is kept but not the exact users, because the tools hash differently, and Liftover reports how many switch.
+Rollouts and variants keep the same users, if you ask: `plan.py --preserve-rollouts` rebuilds an Unleash percentage rollout as the rule `unleash_bucket_<group> <= %`, and a flag with one strategy for everyone and weighted variants as one segment per variant on the trait `unleash_variant_<flag>`. The cutover has the app send Unleash's own number (`scripts/bucket.py`, pure Python; its rollout bucket and its variant hash agree with the real Unleash SDK on 2,000 and 3,000 users) as that trait. Parity then holds user for user ([examples/unleash-preserve-parity.md](examples/unleash-preserve-parity.md): `new_checkout` 25% and the three-way `checkout_button` are both "same for every user", 20/20 pass). Without the option, and for LaunchDarkly rollouts and variants, the share is kept but not the exact users, because the tools hash differently, and Liftover reports how many switch.
 
 ## The five steps
 
@@ -98,7 +131,7 @@ Then load `sandbox/.env` into the shell, set `FLAGSMITH_ORGANISATION`, and run t
 
 - **Sources:** LaunchDarkly (from SDK data files), Unleash and environment variables.
 - **Not converted:** LaunchDarkly prerequisites and segment-match clauses, Unleash segments, date constraints and non-user stickiness are reported, not converted.
-- **Rollouts and variants:** Unleash rollouts keep their exact users with `--preserve-rollouts`. Variants and LaunchDarkly rollouts keep their shares, not their exact users, because the tools hash differently. The report counts the users who switch.
+- **Rollouts and variants:** Unleash rollouts, and variants on a single everyone-strategy, keep their exact users with `--preserve-rollouts`. Other Unleash variant shapes and all LaunchDarkly rollouts and variants keep their shares, not their exact users, because the tools hash differently. The report counts the users who switch.
 - **Cutover hints:** written for Python and JavaScript SDK calls.
 
 ## Layout

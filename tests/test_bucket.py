@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "skills/liftover/scripts"))
-from bucket import _murmur3_32, unleash_bucket  # noqa: E402
+from bucket import _murmur3_32, unleash_bucket, unleash_variant  # noqa: E402
 
 
 class Bucket(unittest.TestCase):
@@ -33,6 +33,28 @@ class Bucket(unittest.TestCase):
                                    multiple_instance_mode=InstanceAllowType.SILENTLY_ALLOW)
             ids = [f"user-{i:05d}" for i in range(2000)]
             wrong = [u for u in ids if client.is_enabled("roll", {"userId": u}) != (unleash_bucket("grp", u) <= 37)]
+        self.assertEqual(wrong, [], f"{len(wrong)} of {len(ids)} users differ, e.g. {wrong[:3]}")
+
+    def test_variants_match_unleash_sdk(self):
+        try:
+            from UnleashClient import UnleashClient
+            from UnleashClient.cache import FileCache
+            from UnleashClient.utils import InstanceAllowType
+        except ImportError:
+            self.skipTest("UnleashClient not installed")
+        weights = [("a", 500), ("b", 300), ("c", 200)]
+        kinds = ["variable", "fix", "fix"]  # how the seeded demo flag is built
+        feature = {"name": "vf", "type": "release", "enabled": True, "project": "default", "stale": False,
+                   "strategies": [{"name": "default", "constraints": [], "segments": [], "parameters": {}}],
+                   "variants": [{"name": n, "weight": w, "weightType": k, "stickiness": "default", "overrides": []}
+                                for (n, w), k in zip(weights, kinds)], "impressionData": False}
+        with tempfile.TemporaryDirectory() as d:
+            cache = FileCache("variant-test", directory=d)
+            cache.bootstrap_from_dict({"version": 2, "features": [feature]})
+            client = UnleashClient("http://127.0.0.1:1/api", "variant-test", cache=cache,
+                                   multiple_instance_mode=InstanceAllowType.SILENTLY_ALLOW)
+            ids = [f"user-{i:05d}" for i in range(3000)]
+            wrong = [u for u in ids if client.get_variant("vf", {"userId": u})["name"] != unleash_variant("vf", u, weights)]
         self.assertEqual(wrong, [], f"{len(wrong)} of {len(ids)} users differ, e.g. {wrong[:3]}")
 
 

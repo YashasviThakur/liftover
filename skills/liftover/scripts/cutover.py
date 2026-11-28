@@ -41,7 +41,7 @@ def write_pr_body(plan, migrated):
             "- Percentage rollouts and variants keep their shares, but Flagsmith hashes users differently, "
             "so some users switch bucket once (counted below)." if not plan.get("preserved") else
             "- Rollouts keep their exact users: the app sends Unleash's bucket number as a trait "
-            f"({', '.join(p['trait'] for p in plan['preserved'])}), so nobody switches. Variants keep their shares only.",
+            f"({', '.join(p['trait'] for p in plan['preserved'])}), so nobody switches.",
             ""]
     body += [l.rstrip("\n") for l in parity.read_text().splitlines()]
     body += ["", "### Rollback",
@@ -80,9 +80,10 @@ def main():
         for k in missing:
             print(f"not read from Flagsmith: {k}")
         text = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in files(a.repo))
-        no_trait = [p["trait"] for p in plan.get("preserved", []) if "unleash_bucket(" not in text]
+        no_trait = [p["trait"] for p in plan.get("preserved", [])
+                    if ("unleash_variant(" if p.get("kind") == "variant" else "unleash_bucket(") not in text]
         for t in no_trait:
-            print(f"bucket trait not sent: {t} (copy scripts/bucket.py into the app, pass unleash_bucket(group, user_id))")
+            print(f"bucket trait not sent: {t} (copy scripts/bucket.py into the app and pass the trait, see the bucket line)")
         results = json.loads((STATE / "parity.json").read_text()) if (STATE / "parity.json").exists() else None
         if results is None:
             print("no parity result: run parity.py before the cutover")
@@ -107,8 +108,10 @@ def main():
     print("          no user in scope (a job, a startup check): flagsmith.get_environment_flags() instead, same methods")
     print("  js:     flagsmith.init({ environmentID }); identify(userId, traits)")
     for p in plan.get("preserved", []):
+        call = (f"unleash_variant({p['group']!r}, user_id, {p['variants']})" if p.get("kind") == "variant"
+                else f"unleash_bucket({p['group']!r}, user_id)")
         print(f"bucket   {p['flag']}: copy scripts/bucket.py into the app; wherever the user is identified pass trait "
-              f"{p['trait']}=unleash_bucket({p['group']!r}, user_id) so the rollout keeps the same users")
+              f"{p['trait']}={call} so the {'variant' if p.get('kind') == 'variant' else 'rollout'} keeps the same users")
     for ref in clients:
         print(f"client   {ref}")
     for k, f in sorted(migrated.items()):

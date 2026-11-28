@@ -147,7 +147,25 @@ def plan_flag(f, envs, as_config, preserved=None):
             state["mv_pcts"] = {str(v["value"] if v["value"] is not None else v["key"]): v["weight_pct"] for v in vs}
         if e["enabled"]:
             children = [map_rule(r, warnings, f["key"], preserved) for r in e["rules"]]
-            if not children or any(c == [] for c in children):
+            if preserved is not None and state.get("mv_pcts") and children == [[]]:
+                # one strategy for everyone with weighted variants: pin each user to the variant Unleash gave them,
+                # through a trait the app sends (unleash_variant in bucket.py). Flagsmith's own weights stay as the fallback.
+                trait = f"unleash_variant_{f['key']}"
+                if not any(p["trait"] == trait for p in preserved):
+                    preserved.append({"flag": f["key"], "group": f["key"], "trait": trait, "kind": "variant",
+                                      "variants": [[v["key"], round(v["weight_pct"] * 10)] for v in vs]})
+                # An override copies the flag's variant weights when it is created, so with weights it would still pick a
+                # variant by chance. Every user has the trait and lands in a segment, so the weights are zero here.
+                state["mv_pcts"] = dict.fromkeys(state["mv_pcts"], 0.0)
+                state["enabled"], state["segment_overrides"] = True, []
+                for i, v in enumerate(vs):
+                    name = f"{f['key']}_{env}_{v['key']}"
+                    segments.append({"name": name, "flag": f["key"], "env": env, "rules": [
+                        {"type": "ANY", "conditions": [], "rules": [
+                            {"type": "ALL", "rules": [], "conditions": [cond(trait, "EQUAL", v["key"])]}]}]})
+                    state["segment_overrides"].append({"segment": name, "enabled": True, "priority": i,
+                                                       "value": str(v["value"] if v["value"] is not None else v["key"])})
+            elif not children or any(c == [] for c in children):
                 state["enabled"] = True  # some strategy matches everyone
             else:
                 name = f"{f['key']}_{env}"
@@ -258,7 +276,7 @@ def main():
         ap.add_argument(f"--{d}", default="", help="comma-separated flag keys")
     ap.add_argument("--env-map", default="", help="source=Flagsmith environment names, e.g. production=Production")
     ap.add_argument("--preserve-rollouts", action="store_true",
-                    help="Unleash rollouts keep their exact users: the app sends bucket.py's number as a trait")
+                    help="Unleash rollouts and single-strategy variants keep their exact users: the app sends bucket.py's number or variant as a trait")
     a = ap.parse_args()
 
     flags = json.loads(a.inventory.read_text())["flags"]

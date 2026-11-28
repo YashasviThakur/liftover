@@ -24,7 +24,7 @@ from collections import Counter
 from pathlib import Path
 
 from apply import describe_rules
-from bucket import unleash_bucket
+from bucket import unleash_bucket, unleash_variant
 from cli import fs
 from plan import env_var_enabled
 
@@ -127,6 +127,11 @@ def source_value(f, env, client, uid, traits):
     return on, ((v.get("payload") or {}).get("value") or v["name"]) if v.get("enabled") else None
 
 
+def trait_value(p, uid):
+    """What the migrated app sends for a preserved flag: Unleash's rollout bucket, or the variant Unleash picks."""
+    return unleash_variant(p["group"], uid, p["variants"]) if p.get("kind") == "variant" else unleash_bucket(p["group"], uid)
+
+
 def explain(f, src_env, plan, fs_env, traits):
     """One line on why a flag differs: the rule Flagsmith got, and the likeliest cause for the first differing user."""
     e = f["environments"].get(src_env) or {}
@@ -144,8 +149,9 @@ def hashed(f, env, preserved=()):
     ld = e.get("ld")
     if ld:
         return e["enabled"] and any(x["rollout"] for x in ld["rules"] + [ld["fallthrough"]])
-    keeps_users = f.get("key") in preserved  # its rollouts use Unleash's own bucket, so they must match user for user
-    return any((r["rollout_percent"] < 100 and not keeps_users) or r.get("variants") for r in e.get("rules", []))
+    keeps_users = f.get("key") in preserved  # rollouts and variants use Unleash's own hash, so they must match user for user
+    return any(r["rollout_percent"] < 100 and not keeps_users or r.get("variants") and not keeps_users
+               for r in e.get("rules", []))
 
 
 def main():
@@ -175,7 +181,7 @@ def main():
         fl = flagsmith_client(a.project, fs_env, tmp)
         rows = {k: [] for k in features}
         for uid, traits in users:
-            got = fl.get_identity_flags(uid, {**traits, **{p["trait"]: unleash_bucket(p["group"], uid) for p in kept}})
+            got = fl.get_identity_flags(uid, {**traits, **{p["trait"]: trait_value(p, uid) for p in kept}})
             for k in features:
                 src = source_value(flags[k], src_env, ld if flags[k]["source"] == "launchdarkly" else un, uid, traits)
                 on = got.is_feature_enabled(k)

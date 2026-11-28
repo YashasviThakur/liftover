@@ -90,13 +90,27 @@ class Plan(unittest.TestCase):
     def test_preserve_rollouts_keeps_users(self):
         p, plan = run("--retire", "dead", "--skip", "date_rule", "--preserve-rollouts")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertEqual(plan["preserved"], [{"flag": "negations", "group": "g", "trait": "unleash_bucket_g"}])
+        self.assertEqual(plan["preserved"][0], {"flag": "negations", "group": "g", "trait": "unleash_bucket_g"})
         segs = {s["name"]: s for s in plan["segments"]}
         last = segs["negations_production"]["rules"][0]["rules"][0]["conditions"][-1]
         self.assertEqual(last, {"property": "unleash_bucket_g", "operator": "LESS_THAN_INCLUSIVE", "value": "10"})
         self.assertIn("preserved negations", p.stdout)
         _, plain = run("--retire", "dead", "--skip", "date_rule")  # off by default
         self.assertEqual(plain["preserved"], [])
+
+    def test_preserve_pins_each_variant_to_its_users(self):
+        p, plan = run("--retire", "dead", "--skip", "date_rule", "--preserve-rollouts")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        kept = next(k for k in plan["preserved"] if k["flag"] == "variants")
+        self.assertEqual((kept["kind"], kept["trait"], kept["variants"]),
+                         ("variant", "unleash_variant_variants", [["a", 700], ["b", 300]]))
+        state = next(s for s in plan["states"] if s["feature"] == "variants")
+        self.assertEqual([(o["segment"], o["value"], o["priority"]) for o in state["segment_overrides"]],
+                         [("variants_production_a", "A", 0), ("variants_production_b", "b", 1)])
+        self.assertEqual(state["mv_pcts"], {"A": 0.0, "b": 0.0})  # overrides copy weights, so they start at zero
+        seg = next(s for s in plan["segments"] if s["name"] == "variants_production_a")
+        self.assertEqual(seg["rules"][0]["rules"][0]["conditions"],
+                         [{"property": "unleash_variant_variants", "operator": "EQUAL", "value": "a"}])
 
     def test_undecided_and_unmappable_block(self):
         p, plan = run()

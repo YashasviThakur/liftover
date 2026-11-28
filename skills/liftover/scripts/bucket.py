@@ -32,3 +32,17 @@ def _murmur3_32(data: bytes, seed: int = 0) -> int:
 def unleash_bucket(group_id: str, user_id: str) -> int:
     """1..100, the same number Unleash's gradualRollout / flexibleRollout strategy computes."""
     return _murmur3_32(f"{group_id}:{user_id}".encode("utf-8")) % 100 + 1
+
+
+VARIANT_SEED = 86028157  # Unleash hashes variants with a different seed from rollouts
+
+
+def unleash_variant(flag: str, user_id: str, variants) -> str:
+    """The variant Unleash serves this user: `variants` is [(name, weight), ...] in Unleash's order and weight units."""
+    total = sum(w for _, w in variants)
+    target = _murmur3_32(f"{flag}:{user_id}".encode("utf-8"), VARIANT_SEED) % total + 1
+    seen = 0
+    for name, weight in variants:
+        seen += weight
+        if target <= seen:
+            return name
