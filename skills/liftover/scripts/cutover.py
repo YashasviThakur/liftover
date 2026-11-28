@@ -83,9 +83,15 @@ def main():
         no_trait = [p["trait"] for p in plan.get("preserved", []) if "unleash_bucket(" not in text]
         for t in no_trait:
             print(f"bucket trait not sent: {t} (copy scripts/bucket.py into the app, pass unleash_bucket(group, user_id))")
-        ok = not (old or clients or missing or no_trait)
+        results = json.loads((STATE / "parity.json").read_text()) if (STATE / "parity.json").exists() else None
+        if results is None:
+            print("no parity result: run parity.py before the cutover")
+        failing = [f"{r['flag']} {r['env']}" for r in results or [] if not r["ok"]]
+        for f in failing:
+            print(f"parity failed: {f} (fix the plan, re-apply and rerun parity.py; do not ship this PR)")
+        ok = not (old or clients or missing or no_trait or results is None or failing)
         if not ok:
-            print(f"cutover incomplete: {len(old) + len(clients) + len(missing) + len(no_trait)} items")
+            print(f"cutover incomplete: {len(old) + len(clients) + len(missing) + len(no_trait) + len(failing) + (results is None)} items")
             sys.exit(1)
         write_pr_body(plan, migrated)
         print("cutover complete: every migrated flag is read from Flagsmith, nothing reads the old system "

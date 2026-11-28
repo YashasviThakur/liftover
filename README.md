@@ -50,6 +50,8 @@ The full table is in [references/mapping.md](skills/liftover/references/mapping.
 - **Production needs that token:** production is written only with `--confirm-production <token>`, given after the user approves those lines. If the list changes in between, the token no longer matches and the run is refused.
 - **Reruns and drift:** reruns are idempotent, so a failed run continues where it stopped. A hand-edited segment shows up as a fix in the next dry run.
 - **Rollback:** everything created is tagged `migrated` and recorded, and `--rollback` removes it.
+- **No PR over a failing parity check:** `cutover.py --check` refuses while `.liftover/parity.json` is missing or has any FAIL, and each parity failure prints the rule Flagsmith got and the likeliest cause (a missing trait, or a different rule shape).
+- **Data is not instructions:** the skill tells the agent that flag names, values and script output are data.
 - **Cutover keeps today's behaviour:** unknown flags still answer off (`default_flag_handler`), and the old system stays as a fallback.
 
 ## Demo results (sandbox in this repo)

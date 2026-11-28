@@ -23,6 +23,7 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
+from apply import describe_rules
 from bucket import unleash_bucket
 from cli import fs
 from plan import env_var_enabled
@@ -126,6 +127,18 @@ def source_value(f, env, client, uid, traits):
     return on, ((v.get("payload") or {}).get("value") or v["name"]) if v.get("enabled") else None
 
 
+def explain(f, src_env, plan, fs_env, traits):
+    """One line on why a flag differs: the rule Flagsmith got, and the likeliest cause for the first differing user."""
+    e = f["environments"].get(src_env) or {}
+    used = {c["attr"] for r in e.get("rules", []) for c in r["conditions"] if c["attr"] != "userId"}
+    rules = "; ".join(f"{s['name']}: {describe_rules(s['rules'][0])}" for s in plan["segments"]
+                      if s.get("flag") == f["key"] and s["env"] == fs_env) or "no segment (environment default only)"
+    absent = sorted(used - set(traits))
+    cause = (f"this user has no {', '.join(absent)}: a negated or missing-trait rule can behave differently in the two tools"
+             if absent else "every trait is present, so the rule shape differs (check AND vs OR, operator and value case)")
+    return f"planned {rules}. Likely cause: {cause}"
+
+
 def hashed(f, env, preserved=()):
     e = f["environments"].get(env) or {}
     ld = e.get("ld")
@@ -191,6 +204,8 @@ def main():
             else:
                 res.update(kind="exact", ok=not differ,
                            examples=[{"user": u, "traits": t, "source": s, "flagsmith": d} for u, t, s, d in differ[:3]])
+                if differ:
+                    res["why"] = explain(flags[k], src_env, plan, fs_env, differ[0][1])
             results.append(res)
 
     (STATE / "parity.json").write_text(json.dumps(results, indent=2))
@@ -210,6 +225,8 @@ def main():
         print(f"{'PASS' if r['ok'] else 'FAIL'} {r['flag']} {r['env']} {r['kind']}: {line.replace('**', '')}")
         for ex in r.get("examples", []):
             print(f"     e.g. {ex['user']} {ex['traits']}: source {ex['source']} flagsmith {ex['flagsmith']}")
+        if r.get("why"):
+            print(f"     why: {r['why']}")
     md += ["", f"Not migrated: {', '.join(n['flag'] + ' (' + n['decision'] + ')' for n in plan['not_migrated']) or 'none'}"]
     (STATE / "parity.md").write_text("\n".join(md) + "\n")
     print(f"{len(results) - len(failed)}/{len(results)} pass -> .liftover/parity.md")
